@@ -8,7 +8,7 @@ load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GENERATION_MODEL = "gemini-1.5-flash"
-EMBEDDING_MODEL = "models/text-embedding-004"
+EMBEDDING_MODEL = "models/gemini-embedding-001"
 
 if GEMINI_API_KEY and GEMINI_API_KEY != "your_gemini_api_key_here":
     genai.configure(api_key=GEMINI_API_KEY)
@@ -22,16 +22,33 @@ def _ensure_configured():
 
 
 def embed_texts(texts: List[str], task_type: str = "retrieval_document") -> List[List[float]]:
-    """Embed a list of strings. task_type is 'retrieval_document' or 'retrieval_query'."""
+    """Embed a list of strings. task_type is 'retrieval_document' or 'retrieval_query'.
+    Batches in groups to keep upload latency low.
+    """
     _ensure_configured()
     vectors: List[List[float]] = []
-    for text in texts:
-        result = genai.embed_content(
-            model=EMBEDDING_MODEL,
-            content=text,
-            task_type=task_type,
-        )
-        vectors.append(result["embedding"])
+    BATCH = 50
+    for start in range(0, len(texts), BATCH):
+        group = texts[start : start + BATCH]
+        try:
+            result = genai.embed_content(
+                model=EMBEDDING_MODEL,
+                content=group,
+                task_type=task_type,
+            )
+            emb = result["embedding"]
+            # When `content` is a list, `embedding` is a list of vectors.
+            if emb and isinstance(emb[0], (int, float)):
+                vectors.append(emb)
+            else:
+                vectors.extend(emb)
+        except Exception:
+            # Fall back to one-by-one if batching is unsupported by the model.
+            for text in group:
+                r = genai.embed_content(
+                    model=EMBEDDING_MODEL, content=text, task_type=task_type
+                )
+                vectors.append(r["embedding"])
     return vectors
 
 

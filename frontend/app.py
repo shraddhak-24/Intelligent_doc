@@ -6,7 +6,7 @@ import requests
 import streamlit as st
 
 API_BASE = "http://localhost:8000"
-TIMEOUT = 120
+TIMEOUT = 600
 
 st.set_page_config(page_title="Intelligent Document Q&A", page_icon="📄", layout="wide")
 
