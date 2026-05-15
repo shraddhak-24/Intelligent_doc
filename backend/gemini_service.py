@@ -1,5 +1,7 @@
 """Thin wrapper around Google Gemini for generation + embedding."""
 import os
+import re
+import time
 from typing import List
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -7,7 +9,7 @@ import google.generativeai as genai
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GENERATION_MODEL = "gemini-1.5-flash"
+GENERATION_MODEL = "gemini-2.5-flash"
 EMBEDDING_MODEL = "models/gemini-embedding-001"
 
 if GEMINI_API_KEY and GEMINI_API_KEY != "your_gemini_api_key_here":
@@ -21,9 +23,31 @@ def _ensure_configured():
         )
 
 
+def _embed_with_retry(content, task_type: str, max_retries: int = 5):
+    """Call embed_content, retrying on 429 quota errors using the server-suggested delay."""
+    attempt = 0
+    while True:
+        try:
+            return genai.embed_content(
+                model=EMBEDDING_MODEL,
+                content=content,
+                task_type=task_type,
+            )
+        except Exception as e:
+            msg = str(e)
+            is_quota = "429" in msg or "quota" in msg.lower() or "ResourceExhausted" in msg
+            if not is_quota or attempt >= max_retries:
+                raise
+            m = re.search(r"retry[_ ]delay[^\d]*(\d+)", msg, re.IGNORECASE)
+            delay = int(m.group(1)) + 2 if m else 2 ** attempt
+            delay = min(delay, 60)
+            time.sleep(delay)
+            attempt += 1
+
+
 def embed_texts(texts: List[str], task_type: str = "retrieval_document") -> List[List[float]]:
     """Embed a list of strings. task_type is 'retrieval_document' or 'retrieval_query'.
-    Batches in groups to keep upload latency low.
+    Batches in groups to keep upload latency low and retries on 429.
     """
     _ensure_configured()
     vectors: List[List[float]] = []
@@ -31,23 +55,15 @@ def embed_texts(texts: List[str], task_type: str = "retrieval_document") -> List
     for start in range(0, len(texts), BATCH):
         group = texts[start : start + BATCH]
         try:
-            result = genai.embed_content(
-                model=EMBEDDING_MODEL,
-                content=group,
-                task_type=task_type,
-            )
+            result = _embed_with_retry(group, task_type)
             emb = result["embedding"]
-            # When `content` is a list, `embedding` is a list of vectors.
             if emb and isinstance(emb[0], (int, float)):
                 vectors.append(emb)
             else:
                 vectors.extend(emb)
-        except Exception:
-            # Fall back to one-by-one if batching is unsupported by the model.
+        except TypeError:
             for text in group:
-                r = genai.embed_content(
-                    model=EMBEDDING_MODEL, content=text, task_type=task_type
-                )
+                r = _embed_with_retry(text, task_type)
                 vectors.append(r["embedding"])
     return vectors
 
